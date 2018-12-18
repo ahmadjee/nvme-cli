@@ -24,7 +24,6 @@
  * This program uses NVMe IOCTLs to run native nvme commands to a device.
  */
 
-#include <endian.h>
 #include <errno.h>
 #include <getopt.h>
 #include <fcntl.h>
@@ -36,6 +35,7 @@
 #include <unistd.h>
 #include <math.h>
 #include <dirent.h>
+#include <libgen.h>
 
 #include <linux/fs.h>
 
@@ -92,7 +92,7 @@ static unsigned long long elapsed_utime(struct timeval start_time,
 	return ret;
 }
 
-static int open_dev(const char *dev)
+static int open_dev(char *dev)
 {
 	int err, fd;
 
@@ -133,7 +133,7 @@ static int get_dev(int argc, char **argv)
 	if (ret)
 		return ret;
 
-	return open_dev((const char *)argv[optind]);
+	return open_dev(argv[optind]);
 }
 
 int parse_and_open(int argc, char **argv, const char *desc,
@@ -273,7 +273,7 @@ static int get_ana_log(int argc, char **argv, struct command *cmd,
 	ana_log_len = sizeof(struct nvme_ana_rsp_hdr) +
 		le32_to_cpu(ctrl.nanagrpid) * sizeof(struct nvme_ana_group_desc);
 	if (!(ctrl.anacap & (1 << 6)))
-		ana_log_len += ctrl.mnan * sizeof(__le32);
+		ana_log_len += le32_to_cpu(ctrl.mnan) * sizeof(__le32);
 
 	ana_log = malloc(ana_log_len);
 	if (!ana_log) {
@@ -367,7 +367,7 @@ static int get_telemetry_log(int argc, char **argv, struct command *cmd, struct 
 	if (err) {
 		fprintf(stderr, "NVMe Status:%s(%x)\n",
 			nvme_status_to_string(err), err);
-		fprintf(stderr, "Failed to aquire telemetry header %d!\n", err);
+		fprintf(stderr, "Failed to acquire telemetry header %d!\n", err);
 		close(output);
 		goto free_mem;
 	}
@@ -401,7 +401,7 @@ static int get_telemetry_log(int argc, char **argv, struct command *cmd, struct 
 	while (offset != full_size) {
 		err = nvme_get_telemetry_log(fd, page_log, 0, cfg.ctrl_init, bs, offset);
 		if (err) {
-			fprintf(stderr, "Failed to aquire full telemetry log!\n");
+			fprintf(stderr, "Failed to acquire full telemetry log!\n");
 			fprintf(stderr, "NVMe Status:%s(%x)\n",
 				nvme_status_to_string(err), err);
 			break;
@@ -1290,103 +1290,137 @@ close_fd:
 	return subsysnqn;
 }
 
-static char *get_nvme_ctrl_transport(char *path)
+static char *get_nvme_ctrl_attr(char *path, const char *attr)
 {
-	char *trpath;
-	char *transport;
-	int fd;
-	ssize_t ret;
-
-	ret = asprintf(&trpath, "%s/transport", path);
-	if (ret < 0)
-		return NULL;
-
-	transport = calloc(1, 1024);
-	if (!transport)
-		goto err_free_trpath;
-
-	fd = open(trpath, O_RDONLY);
-	if (fd < 0) {
-		fprintf(stderr, "Failed to open %s: %s\n",
-				trpath, strerror(errno));
-		goto err_free_tr;
-	}
-
-	ret = read(fd, transport, 1024);
-	if (ret < 0) {
-		fprintf(stderr, "read :%s :%s\n", trpath, strerror(errno));
-		goto err_close_fd;
-	}
-
-	if (transport[strlen(transport) - 1] == '\n')
-		transport[strlen(transport) - 1] = '\0';
-
-	close(fd);
-	free(trpath);
-
-	return transport;
-
-err_close_fd:
-	close(fd);
-err_free_tr:
-	free(transport);
-err_free_trpath:
-	free(trpath);
-
-	return NULL;
-}
-
-static char *get_nvme_ctrl_address(char *path)
-{
-	char *addrpath;
-	char *address;
+	char *attrpath;
+	char *value;
 	int fd;
 	ssize_t ret;
 	int i;
 
-	ret = asprintf(&addrpath, "%s/address", path);
+	ret = asprintf(&attrpath, "%s/%s", path, attr);
 	if (ret < 0)
 		return NULL;
 
-	address = calloc(1, 1024);
-	if (!address)
-		goto err_free_addrpath;
+	value = calloc(1, 1024);
+	if (!value)
+		goto err_free_path;
 
-	fd = open(addrpath, O_RDONLY);
+	fd = open(attrpath, O_RDONLY);
 	if (fd < 0) {
 		fprintf(stderr, "Failed to open %s: %s\n",
-				addrpath, strerror(errno));
-		goto err_free_addr;
+				attrpath, strerror(errno));
+		goto err_free_value;
 	}
 
-	ret = read(fd, address, 1024);
+	ret = read(fd, value, 1024);
 	if (ret < 0) {
-		fprintf(stderr, "read :%s :%s\n", addrpath, strerror(errno));
+		fprintf(stderr, "read :%s :%s\n", attrpath, strerror(errno));
 		goto err_close_fd;
 	}
 
-	if (address[strlen(address) - 1] == '\n')
-		address[strlen(address) - 1] = '\0';
+	if (value[strlen(value) - 1] == '\n')
+		value[strlen(value) - 1] = '\0';
 
-	for (i = 0; i < strlen(address); i++) {
-		if (address[i] == ',' )
-			address[i] = ' ';
+	for (i = 0; i < strlen(value); i++) {
+		if (value[i] == ',' )
+			value[i] = ' ';
 	}
 
 	close(fd);
-	free(addrpath);
+	free(attrpath);
 
-	return address;
+	return value;
 
 err_close_fd:
 	close(fd);
-err_free_addr:
-	free(address);
-err_free_addrpath:
-	free(addrpath);
+err_free_value:
+	free(value);
+err_free_path:
+	free(attrpath);
 
 	return NULL;
 }
+
+static int scan_ctrl_paths_filter(const struct dirent *d)
+{
+	int id, cntlid, nsid;
+
+	if (d->d_name[0] == '.')
+		return 0;
+
+	if (strstr(d->d_name, "nvme")) {
+		if (sscanf(d->d_name, "nvme%dc%dn%d", &id, &cntlid, &nsid) == 3)
+			return 1;
+		if (sscanf(d->d_name, "nvme%dn%d", &id, &nsid) == 2)
+			return 1;
+	}
+
+	return 0;
+}
+
+static char *get_nvme_ctrl_path_ana_state(char *path, int nsid)
+{
+	struct dirent **paths;
+	char *ana_state;
+	int i, n;
+
+	ana_state = calloc(1, 16);
+	if (!ana_state)
+		return NULL;
+
+	n = scandir(path, &paths, scan_ctrl_paths_filter, alphasort);
+	if (n <= 0) {
+		free(ana_state);
+		return NULL;
+	}
+	for (i = 0; i < n; i++) {
+		int id, cntlid, ns, fd;
+		ssize_t ret;
+		char *ctrl_path;
+
+		if (sscanf(paths[i]->d_name, "nvme%dc%dn%d",
+			   &id, &cntlid, &ns) != 3) {
+			if (sscanf(paths[i]->d_name, "nvme%dn%d",
+				   &id, &ns) != 2) {
+				continue;
+			}
+		}
+		if (ns != nsid)
+			continue;
+
+		ret = asprintf(&ctrl_path, "%s/%s/ana_state",
+			       path, paths[i]->d_name);
+		if (ret < 0) {
+			free(ana_state);
+			ana_state = NULL;
+			break;
+		}
+		fd = open(ctrl_path, O_RDONLY);
+		if (fd < 0) {
+			free(ctrl_path);
+			free(ana_state);
+			ana_state = NULL;
+			break;
+		}
+		ret = read(fd, ana_state, 16);
+		if (ret < 0) {
+			fprintf(stderr, "Failed to read ANA state from %s\n",
+				ctrl_path);
+			free(ana_state);
+			ana_state = NULL;
+		} else if (ana_state[strlen(ana_state) - 1] == '\n')
+			ana_state[strlen(ana_state) - 1] = '\0';
+		close(fd);
+		free(ctrl_path);
+		break;
+	}
+	for (i = 0; i < n; i++)
+		free(paths[i]);
+	free(paths);
+	return ana_state;
+}
+
 static int scan_ctrls_filter(const struct dirent *d)
 {
 	int id, nsid;
@@ -1408,10 +1442,12 @@ static void free_ctrl_list_item(struct ctrl_list_item *ctrls)
 	free(ctrls->name);
 	free(ctrls->transport);
 	free(ctrls->address);
+	free(ctrls->state);
+	free(ctrls->ana_state);
 }
 
 static int get_nvme_subsystem_info(char *name, char *path,
-				struct subsys_list_item *item)
+				struct subsys_list_item *item, __u32 nsid)
 {
 	char ctrl_path[512];
 	struct dirent **ctrls;
@@ -1445,7 +1481,8 @@ static int get_nvme_subsystem_info(char *name, char *path,
 		snprintf(ctrl_path, sizeof(ctrl_path), "%s/%s", path,
 			 item->ctrls[ccnt].name);
 
-		item->ctrls[ccnt].address = get_nvme_ctrl_address(ctrl_path);
+		item->ctrls[ccnt].address =
+				get_nvme_ctrl_attr(ctrl_path, "address");
 		if (!item->ctrls[ccnt].address) {
 			fprintf(stderr, "failed to get controller[%d] address.\n", i);
 			free_ctrl_list_item(&item->ctrls[ccnt]);
@@ -1453,13 +1490,24 @@ static int get_nvme_subsystem_info(char *name, char *path,
 		}
 
 		item->ctrls[ccnt].transport =
-				get_nvme_ctrl_transport(ctrl_path);
+				get_nvme_ctrl_attr(ctrl_path, "transport");
 		if (!item->ctrls[ccnt].transport) {
 			fprintf(stderr, "failed to get controller[%d] transport.\n", i);
 			free_ctrl_list_item(&item->ctrls[ccnt]);
 			continue;
 		}
 
+		item->ctrls[ccnt].state =
+				get_nvme_ctrl_attr(ctrl_path, "state");
+		if (!item->ctrls[ccnt].state) {
+			fprintf(stderr, "failed to get controller[%d] state.\n", i);
+			free_ctrl_list_item(&item->ctrls[ccnt]);
+			continue;
+		}
+
+		if (nsid != NVME_NSID_ALL)
+			item->ctrls[ccnt].ana_state =
+				get_nvme_ctrl_path_ana_state(ctrl_path, nsid);
 		ccnt++;
 	}
 
@@ -1524,7 +1572,8 @@ void free_subsys_list(struct subsys_list_item *slist, int n)
 	free(slist);
 }
 
-struct subsys_list_item *get_subsys_list(int *subcnt)
+struct subsys_list_item *get_subsys_list(int *subcnt, char *subsysnqn,
+					 __u32 nsid)
 {
 	char path[310];
 	struct dirent **subsys;
@@ -1545,13 +1594,16 @@ struct subsys_list_item *get_subsys_list(int *subcnt)
 		snprintf(path, sizeof(path), "%s%s", subsys_dir,
 			subsys[i]->d_name);
 		ret = get_nvme_subsystem_info(subsys[i]->d_name, path,
-				&slist[*subcnt]);
+				&slist[*subcnt], nsid);
 		if (ret) {
 			fprintf(stderr,
 				"%s: failed to get subsystem info: %s\n",
 				path, strerror(errno));
 			free_subsys_list_item(&slist[*subcnt]);
-		} else
+		} else if (subsysnqn &&
+			   strncmp(slist[*subcnt].subsysnqn, subsysnqn, 255))
+			free_subsys_list_item(&slist[*subcnt]);
+		else
 			(*subcnt)++;
 	}
 
@@ -1568,12 +1620,15 @@ static int list_subsys(int argc, char **argv, struct command *cmd,
 {
 	struct subsys_list_item *slist;
 	int fmt, ret, subcnt = 0;
+	char *subsysnqn = NULL;
 	const char *desc = "Retrieve information for subsystems";
 	struct config {
+		__u32 namespace_id;
 		char *output_format;
 	};
 
 	struct config cfg = {
+		.namespace_id  = NVME_NSID_ALL,
 		.output_format = "normal",
 	};
 
@@ -1587,11 +1642,42 @@ static int list_subsys(int argc, char **argv, struct command *cmd,
 	if (ret < 0)
 		return ret;
 
-	fmt = validate_output_format(cfg.output_format);
-	if (fmt != JSON && fmt != NORMAL)
-		return -EINVAL;
+	devicename = NULL;
+	if (optind < argc) {
+		char path[512];
+		int id;
 
-	slist = get_subsys_list(&subcnt);
+		devicename = basename(argv[optind]);
+		if (sscanf(devicename, "nvme%dn%d", &id,
+			   &cfg.namespace_id) != 2) {
+			fprintf(stderr, "%s is not a NVMe namespace device\n",
+				argv[optind]);
+			return -EINVAL;
+		}
+		sprintf(path, "/sys/block/%s/device", devicename);
+		subsysnqn = get_nvme_subsnqn(path);
+		if (!subsysnqn) {
+			fprintf(stderr, "Cannot read subsys NQN from %s\n",
+				devicename);
+			return -EINVAL;
+		}
+		optind++;
+	}
+
+	if (ret < 0) {
+		argconfig_print_help(desc, opts);
+		if (subsysnqn)
+			free(subsysnqn);
+		return ret;
+	}
+	fmt = validate_output_format(cfg.output_format);
+	if (fmt != JSON && fmt != NORMAL) {
+		if (subsysnqn)
+			free(subsysnqn);
+		return -EINVAL;
+	}
+
+	slist = get_subsys_list(&subcnt, subsysnqn, cfg.namespace_id);
 
 	if (fmt == JSON)
 		json_print_nvme_subsystem_list(slist, subcnt);
@@ -1599,6 +1685,8 @@ static int list_subsys(int argc, char **argv, struct command *cmd,
 		show_nvme_subsystem_list(slist, subcnt);
 
 	free_subsys_list(slist, subcnt);
+	if (subsysnqn)
+		free(subsysnqn);
 	return ret;
 }
 
@@ -1815,7 +1903,7 @@ static int id_ctrl(int argc, char **argv, struct command *cmd, struct plugin *pl
 static int ns_descs(int argc, char **argv, struct command *cmd, struct plugin *plugin)
 {
 	const char *desc = "Send Namespace Identification Descriptors command to the "\
-			    "given device, returns the namespace identifcation descriptors "\
+			    "given device, returns the namespace identification descriptors "\
 			    "of the specific namespace in either human-readable or binary format.";
 	const char *raw_binary = "show infos in binary format";
 	const char *namespace_id = "identifier of desired namespace";
@@ -2275,9 +2363,11 @@ static int get_feature(int argc, char **argv, struct command *cmd, struct plugin
 			printf("get-feature:%#02x (%s), %s value:%#08x\n", cfg.feature_id,
 				nvme_feature_to_string(cfg.feature_id),
 				nvme_select_to_string(cfg.sel), result);
-			if (cfg.human_readable)
+			if (cfg.sel == 3)
+				nvme_show_select_result(result);
+			else if (cfg.human_readable)
 				nvme_feature_show_fields(cfg.feature_id, result, buf);
-			if (buf)
+			else if (buf)
 				d(buf, cfg.data_len, 16, 1);
 		} else if (buf)
 			d_raw(buf, cfg.data_len);
@@ -4583,8 +4673,8 @@ static int passthru(int argc, char **argv, int ioctl_cmd, const char *desc, stru
 	if (err < 0)
 		perror("passthru");
 	else if (err)
-		fprintf(stderr, "NVMe Status:%s(%x) Command Result:%08x\n",
-				nvme_status_to_string(err), err, result);
+		fprintf(stderr, "NVMe Status:%s(%x)\n",
+				nvme_status_to_string(err), err);
 	else  {
 		if (!cfg.raw_binary) {
 			fprintf(stderr, "NVMe command result:%08x\n", result);

@@ -1,4 +1,3 @@
-#include <endian.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -658,7 +657,7 @@ static void show_nvme_id_ns_dlfeat(__u8 dlfeat)
 		printf("  [7:5] : %#x\tReserved\n", rsvd);
 	printf("  [4:4] : %#x\tGuard Field of Deallocated Logical Blocks is set to %s\n",
 		guard, guard ? "CRC of The Value Read" : "0xFFFF");
-	printf("  [3:3] : %#x\tDeallocate Bit in the Write Zeroes Commmand is %sSupported\n",
+	printf("  [3:3] : %#x\tDeallocate Bit in the Write Zeroes Command is %sSupported\n",
 		dwz, dwz ? "" : "Not ");
 	printf("  [2:0] : %#x\tBytes Read From a Deallocated Logical Block and its Metadata are %s\n", val,
 		val == 2 ? "0xFF" :
@@ -714,7 +713,7 @@ void show_nvme_id_ns(struct nvme_id_ns *ns, unsigned int mode)
 	printf("nvmcap  : %.0Lf\n", int128_to_double(ns->nvmcap));
 	printf("nsattr	: %u\n", ns->nsattr);
 	printf("nvmsetid: %d\n", le16_to_cpu(ns->nvmsetid));
-	printf("anagrpid: %d\n", le32_to_cpu(ns->anagrpid));
+	printf("anagrpid: %u\n", le32_to_cpu(ns->anagrpid));
 	printf("endgid  : %d\n", le16_to_cpu(ns->endgid));
 
 	printf("nguid   : ");
@@ -1483,7 +1482,7 @@ void show_self_test_log(struct nvme_self_test_log *self_test, const char *devnam
 		"Operation was aborted due to a removal of a namespace from the namespace inventory",
 		"Operation was aborted due to the processing of a Format NVM command",
 		"A fatal error or unknown test error occurred while the controller was executing the"\
-		" device self-test operation andthe operation did not complete",
+		" device self-test operation and the operation did not complete",
 		"Operation completed with a segment that failed and the segment that failed is not known",
 		"Operation completed with one or more failed segments and the first segment that failed "\
 		"is indicated in the SegmentNumber field",
@@ -1598,9 +1597,10 @@ static void show_sanitize_log_sstat(__u16 status)
 void show_sanitize_log(struct nvme_sanitize_log_page *sanitize, unsigned int mode, const char *devname)
 {
 	int human = mode & HUMAN;
+	__u16 status = le16_to_cpu(sanitize->status) & NVME_SANITIZE_LOG_STATUS_MASK;
 
 	printf("Sanitize Progress                     (SPROG) :  %u", le32_to_cpu(sanitize->progress));
-	if (human && (sanitize->status & NVME_SANITIZE_LOG_STATUS_MASK) == NVME_SANITIZE_LOG_IN_PROGESS)
+	if (human && status == NVME_SANITIZE_LOG_IN_PROGESS)
 		show_sanitize_log_sprog(le32_to_cpu(sanitize->progress));
 	else
 		printf("\n");
@@ -1677,6 +1677,15 @@ char* nvme_select_to_string(int sel)
 	}
 }
 
+void nvme_show_select_result(__u32 result)
+{
+	if (result & 0x1)
+		printf("  Feature is saveable\n");
+	if (result & 0x2)
+		printf("  Feature is per-namespace\n");
+	if (result & 0x4)
+		printf("  Feature is changeable\n");
+}
 
 char *nvme_status_to_string(__u32 status)
 {
@@ -2727,6 +2736,7 @@ void json_sanitize_log(struct nvme_sanitize_log_page *sanitize_log, const char *
 	struct json_object *sstat;
 	const char *status_str;
 	char str[128];
+	__u16 status = le16_to_cpu(sanitize_log->status);
 
 	root = json_create_object();
 	dev = json_create_object();
@@ -2734,12 +2744,12 @@ void json_sanitize_log(struct nvme_sanitize_log_page *sanitize_log, const char *
 
 	json_object_add_value_int(dev, "sprog", le16_to_cpu(sanitize_log->progress));
 	json_object_add_value_int(sstat, "global_erased",
-			(le16_to_cpu(sanitize_log->status) & NVME_SANITIZE_LOG_GLOBAL_DATA_ERASED) >> 8);
+			(status & NVME_SANITIZE_LOG_GLOBAL_DATA_ERASED) >> 8);
 	json_object_add_value_int(sstat, "no_cmplted_passes",
-			(le16_to_cpu(sanitize_log->status) & NVME_SANITIZE_LOG_NUM_CMPLTED_PASS_MASK) >> 3);
+			(status & NVME_SANITIZE_LOG_NUM_CMPLTED_PASS_MASK) >> 3);
 
-	status_str = get_sanitize_log_sstat_status_str(sanitize_log->status);
-	sprintf(str, "(%d) %s", sanitize_log->status & NVME_SANITIZE_LOG_STATUS_MASK, status_str);
+	status_str = get_sanitize_log_sstat_status_str(status);
+	sprintf(str, "(%d) %s", status & NVME_SANITIZE_LOG_STATUS_MASK, status_str);
 	json_object_add_value_string(sstat, "status", str);
 
 	json_object_add_value_object(dev, "sstat", sstat);
@@ -2762,9 +2772,12 @@ static void show_nvme_subsystem(struct subsys_list_item *item)
 	printf("\\\n");
 
 	for (i = 0; i < item->nctrls; i++) {
-		printf(" +- %s %s %s\n", item->ctrls[i].name,
+		printf(" +- %s %s %s %s %s\n", item->ctrls[i].name,
 				item->ctrls[i].transport,
-				item->ctrls[i].address);
+				item->ctrls[i].address,
+				item->ctrls[i].state,
+				item->ctrls[i].ana_state ?
+					item->ctrls[i].ana_state : "");
 	}
 
 }
@@ -2810,6 +2823,12 @@ void json_print_nvme_subsystem_list(struct subsys_list_item *slist, int n)
 					slist[i].ctrls[j].transport);
 			json_object_add_value_string(path_attrs, "Address",
 					slist[i].ctrls[j].address);
+			json_object_add_value_string(path_attrs, "State",
+					slist[i].ctrls[j].state);
+			if (slist[i].ctrls[j].ana_state)
+				json_object_add_value_string(path_attrs,
+						"ANAState",
+						slist[i].ctrls[j].ana_state);
 			json_array_add_value_object(paths, path_attrs);
 		}
 		if (j) {
@@ -2983,7 +3002,7 @@ static void show_registers_bpinfo_brs(__u8 brs)
 		printf("No Boot Partition read operation requested\n");
 		break;
 	case 1:
-		printf("Boot Partition read in progres\n");
+		printf("Boot Partition read in progress\n");
 		break;
 	case 2:
 		printf("Boot Partition read completed successfully\n");
