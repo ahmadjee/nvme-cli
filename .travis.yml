@@ -7,6 +7,7 @@ branches:
   only:
   - develop
   - master
+  - /^AHM-v*$/
 script: make
 deploy:
   provider: releases
