@@ -1,12 +1,18 @@
-#Travis CI YAML file
 language: c
 os: linux
 sudo: false
 compiler: gcc
 dist: xenial
 branches:
-    only:
-        - develop
-        - master
-#before_script: .configure
+  only:
+  - develop
+  - master
 script: make
+deploy:
+  provider: releases
+  api_key:
+    secure: lDtgf0EW3rxtoov643L9VBcLPHFs+mgKawJRE+Zdf4MYxPWuFtAXoAOygUGnqMIG7vDvzyZ2SQCruzALgzzVURJJ8yXRG9YHvzQ/4g6kfaE1VzleG95o8z4/2O20lZj0hX1sHakIalDkROS0S4TSW3GgGXKqxa/tAWDxts6rcKTKmganOGiRINtE0ZSZZ4FAJsVOIxHimVGwLU+wwgx/c8Uaz6o9Gg7TIMJYCyisMRvna+bybsWJ9IlcZc9pP8NU0QiAK9jdLLd6/LTCQ0B/OJeyV/3Ovgcn2a/Vs/GJmRI4YZUfhV1SHUmQQQYEPZILKtuCUoqxCfWnEv3qlrynkuEmOQs4xE//B0/8KAYUxo81xiFpz69uK6OA92NiN6uBY2YRbQkMaDZ8rDWDeMyjEyAH+1a9/Wlsv/vZuMVVfSCnSsD/KzrrTZ98G7YKUb1jWVJCwm36wOK5WR8UupHwKO7yMWt9c07vWC5clleZhTTNxbtSCb1r7yZvthUkVg6A+ZqLGZEL0hkKZvHuoYLVvLJYWB9H03e7tEVhtMHMH40QzQS3gDeCJNj7rQr4ozIA/8CNhXgl9QdxFrdHkAe2g6s8d4WH0QK0eJlRyRBFcLJ2+Okc6PfRA6qZHMAl7JnPWyjJAGvlq0pktUoqRf7XDnFQoqIe1o6GBWlltA/wgP4=
+  file: nvme
+  on:
+    repo: ahmadjee/nvme-cli
+    branch: develop
