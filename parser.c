@@ -29,6 +29,7 @@ static int match_one(char *s, const char *p, substring_t args[])
 {
 	char *meta;
 	int argc = 0;
+	unsigned long int val = 0;
 
 	if (!p)
 		return 1;
@@ -70,17 +71,19 @@ static int match_one(char *s, const char *p, substring_t args[])
 			break;
 		}
 		case 'd':
-			strtol(s, &args[argc].to, 0);
+			val = (unsigned long int) strtol(s, &args[argc].to, 0);
 			goto num;
 		case 'u':
-			strtoul(s, &args[argc].to, 0);
+			val = strtoul(s, &args[argc].to, 0);
 			goto num;
 		case 'o':
-			strtoul(s, &args[argc].to, 8);
+			val = strtoul(s, &args[argc].to, 8);
 			goto num;
 		case 'x':
-			strtoul(s, &args[argc].to, 16);
+			val = strtoul(s, &args[argc].to, 16);
 		num:
+		 if !(((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN))
+                   || (errno != 0 && val == 0)))
 			if (args[argc].to == args[argc].from)
 				return 0;
 			break;
