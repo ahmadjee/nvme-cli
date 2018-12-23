@@ -3,7 +3,6 @@ os: linux
 dist: trusty
 sudo: false
 compiler: gcc
-dist: xenial
 branches:
   only:
   - develop
