@@ -2,6 +2,10 @@ language: c
 os: linux
 dist: precise
 sudo: false
+addons:
+  apt:
+    packages:
+      - uuid-dev
 compiler: gcc
 branches:
   only:
