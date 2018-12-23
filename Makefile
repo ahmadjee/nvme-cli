@@ -9,6 +9,8 @@ PREFIX ?= /usr/local
 SYSCONFDIR = /etc
 SBINDIR = $(PREFIX)/sbin
 LIB_DEPENDS =
+CFLAGS += `pkg-config --cflags uuid`
+LDFLAGS += `pkg-config --libs uuid`
 
 ifeq ($(LIBUUID),0)
 	override LDFLAGS += -luuid
