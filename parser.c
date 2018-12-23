@@ -82,8 +82,7 @@ static int match_one(char *s, const char *p, substring_t args[])
 		case 'x':
 			val = strtoul(s, &args[argc].to, 16);
 		num:
-		 if !(((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN))
-                   || (errno != 0 && val == 0)))
+		 if (val == LONG_MAX || val == LONG_MIN)
 			if (args[argc].to == args[argc].from)
 				return 0;
 			break;
